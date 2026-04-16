@@ -1,3 +1,3 @@
 # FEZ WASM
 
-Fez port ported by gurtmuncher
+Fez port, ported by gurtmuncher
