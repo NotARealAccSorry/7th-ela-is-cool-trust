@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FEZ - Web</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cpath fill='%23f0c040' d='M7 7h18v5H13v4h10v5H13v4H7z'/%3E%3C/svg%3E" />
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+        }
+
+        body {
+            font-family: monospace;
+        }
+
+        #status {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            min-width: 300px;
+            text-align: center;
+            color: #fff;
+            font-size: 14px;
+            user-select: none;
+        }
+
+        #status.hidden {
+            display: none;
+        }
+
+        #progress-bar {
+            width: 300px;
+            height: 6px;
+            margin: 10px auto 0;
+            background: #2b2b2b;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        #progress-fill {
+            width: 0;
+            height: 100%;
+            background: #f0c040;
+            transition: width .2s ease;
+        }
+
+        #detail {
+            margin-top: 7px;
+            font-size: 11px;
+            color: #8a8a8a;
+            letter-spacing: 0.2px;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            image-rendering: pixelated;
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+<div id="status">
+    <div id="status-text">Loading...</div>
+    <div id="progress-bar">
+        <div id="progress-fill"></div>
+    </div>
+    <div id="detail"></div>
+</div>
+
+<canvas id="canvas" class="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+
+<script type="module">
+    const canvas = document.getElementById("canvas");
+    const statusBox = document.getElementById("status");
+    const statusText = document.getElementById("status-text");
+    const progressFill = document.getElementById("progress-fill");
+    const detailText = document.getElementById("detail");
+//stop browser from stealing the fucking keys mid game
+    const blockedKeys = new Set([
+        "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"
+    ]);
+
+    window.addEventListener("keydown", (e) => {
+        if (blockedKeys.has(e.key)) e.preventDefault();
+    });
+
+    window.addEventListener("keyup", (e) => {
+        if (blockedKeys.has(e.key)) e.preventDefault();
+    });
+
+    canvas.focus();
+
+    function resizeCanvasBackingStore() {
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+        const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+    }
+
+    resizeCanvasBackingStore();
+    window.addEventListener("resize", resizeCanvasBackingStore);
+
+    function updateStatus(text, percent, extra = "") {
+        statusBox.classList.remove("hidden");
+        statusText.textContent = text;
+        if (typeof percent === "number") {
+            progressFill.style.width = percent + "%";
+        }
+        detailText.textContent = extra;
+    }
+
+    function prettySize(bytes) {
+        if (bytes >= 1024 * 1024) {
+            return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+        }
+        if (bytes >= 1024) {
+            return Math.round(bytes / 1024) + " KB";
+        }
+        return bytes + " B";
+    }
+
+    const contentFiles = [
+        { url: "content/Essentials.pak", dest: "/Content/Essentials.pak", size: 17825792 },
+        { url: "content/Updates.pak", dest: "/Content/Updates.pak", size: 1036288 },
+        { url: "content/Sounds/SoundLevels.sdl", dest: "/Content/Sounds/SoundLevels.sdl", size: 25600 },
+        { url: "content/Other.pak", dest: "/Content/Other.pak", size: 167772160 },
+        { url: "content/Music.pak", dest: "/Content/Music.pak", size: 203423744 },
+        { url: "content/gamecontrollerdb.txt", dest: "/gamecontrollerdb.txt", size: 41984 }
+    ];
+
+    const totalDownloadSize = contentFiles.reduce((total, file) => total + file.size, 0);
+
+    async function startGame() {
+        try {
+            updateStatus("Loading .NET runtime", 2);
+
+            const dotnetModule = await import("./_framework/dotnet.js");
+            const dotnet = dotnetModule.dotnet;
+
+            updateStatus("Initializing runtime", 8);
+
+            const runtime = await dotnet
+                .withModuleConfig({
+                    canvas,
+                    canvasSelector: "#canvas"
+                })
+                .withConfig({
+                    pthreadPoolInitialSize: 8
+                })
+                .create();
+
+            const config = runtime.getConfig();
+            const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
+            const gameApi = exports.FezGame.Program;
+
+            dotnet.instance.Module.canvas = canvas;
+
+            await runtime.runMain();
+
+            updateStatus("Setting up filesystem", 12);
+
+            const basePath = window.location.origin +
+                window.location.pathname.replace(/\/[^/]*$/, "/");
+
+            await gameApi.PreInit(basePath);
+
+            let downloadedSoFar = 0;
+
+            for (let i = 0; i < contentFiles.length; i++) {
+                const file = contentFiles[i];
+                const fileName = file.url.split("/").pop();
+                const percent = 15 + Math.round((downloadedSoFar / totalDownloadSize) * 70);
+
+                updateStatus(
+                    `Downloading game content (${i + 1}/${contentFiles.length})...`,
+                    percent,
+                    `${fileName} - ${prettySize(file.size)}`
+                );
+
+                await gameApi.DownloadContentFile(file.url, file.dest);
+                downloadedSoFar += file.size;
+            }
+
+            updateStatus("Content loaded", 88);
+            updateStatus("Initializing game", 90);
+
+            resizeCanvasBackingStore();
+            await gameApi.Init(canvas.width || 1280, canvas.height || 720);
+
+            updateStatus("Starting FEZ", 98);
+            statusBox.classList.add("hidden");
+            canvas.focus();
+
+            console.log("starting main loop");
+
+            async function frame() {
+                try {
+                    const keepGoing = await gameApi.MainLoop();
+
+                    if (keepGoing) {
+                        requestAnimationFrame(frame);
+                        return;
+                    }
+
+                    console.log("game exited normally");
+                    await gameApi.Cleanup();
+                } catch (err) {
+                    console.error("main loop crashed:", err);
+                    updateStatus(
+                        "Error: " + err.message,
+                        0,
+                        "Check console for details."
+                    );
+                }
+            }
+
+            requestAnimationFrame(frame);
+        } catch (err) {
+            console.error("Fatal error:", err);
+            updateStatus(
+                "Error: " + err.message,
+                0,
+                "Check browser console for details."
+            );
+        }
+    }
+
+    startGame();
+</script>
+</body>
+</html>
