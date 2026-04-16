@@ -14,7 +14,6 @@ function openDB() {
 export async function persistFile(key, data) {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, 'readwrite');
-    // data arrives as Uint8Array from C# byte[] marshaling
     tx.objectStore(STORE_NAME).put(new Uint8Array(data), key);
     return new Promise((resolve, reject) => {
         tx.oncomplete = () => { db.close(); resolve(); };
@@ -29,7 +28,6 @@ export async function loadFile(key) {
     return new Promise((resolve, reject) => {
         req.onsuccess = () => {
             db.close();
-            // Return empty Uint8Array if not found (C# checks length)
             resolve(req.result ? new Uint8Array(req.result) : new Uint8Array(0));
         };
         req.onerror = () => { db.close(); reject(req.error); };
@@ -74,7 +72,6 @@ export async function getAllKeys() {
     return new Promise((resolve, reject) => {
         req.onsuccess = () => {
             db.close();
-            // Return pipe-separated string (simpler than array marshaling)
             resolve(req.result.join('|'));
         };
         req.onerror = () => { db.close(); reject(req.error); };
